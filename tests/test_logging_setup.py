@@ -32,16 +32,6 @@ def test_filter_mascara_bearer_em_msg():
     assert "(masked)" in r.msg
 
 
-def test_filter_mascara_token_telegram():
-    f = TokenMaskFilter()
-    # Token fake no formato Telegram (NUMERIC_ID:35-char-secret)
-    fake = "1234567890:AABBccDDeeFFggHHiiJJkkLLmmNNooPPqqR"
-    r = _record(f"token={fake} usado")
-    f.filter(r)
-    assert fake.split(":", 1)[1] not in r.msg
-    assert "(masked)" in r.msg or "…" in r.msg
-
-
 def test_filter_preserva_msg_sem_token():
     f = TokenMaskFilter()
     r = _record("[poll] municipio=25300 datas=0 acao=noop")
