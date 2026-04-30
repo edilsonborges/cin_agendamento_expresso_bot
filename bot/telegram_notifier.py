@@ -77,18 +77,83 @@ class TelegramNotifier:
         result = self._send_to(self._chat_id, text, parse_mode)
         return result.ok
 
+    def send_to(
+        self,
+        chat_id: int | str,
+        text: str,
+        *,
+        parse_mode: str = "",
+        reply_markup: dict | None = None,
+    ) -> BroadcastResult:
+        """Envia mensagem para um chat específico (com retry)."""
+        return self._send_to(chat_id, text, parse_mode, reply_markup=reply_markup)
+
     def broadcast(
         self,
         chat_ids: list[int] | set[int],
         text: str,
         *,
         parse_mode: str = "MarkdownV2",
+        reply_markup: dict | None = None,
     ) -> list[BroadcastResult]:
         """Envia `text` para múltiplos chat_ids — retorna resultado por chat."""
-        return [self._send_to(cid, text, parse_mode) for cid in chat_ids]
+        return [
+            self._send_to(cid, text, parse_mode, reply_markup=reply_markup)
+            for cid in chat_ids
+        ]
+
+    def edit_message(
+        self,
+        chat_id: int | str,
+        message_id: int | None,
+        text: str,
+        *,
+        parse_mode: str = "",
+        reply_markup: dict | None = None,
+    ) -> bool:
+        """POST /editMessageText. Retorna True se ok."""
+        if message_id is None:
+            logger.warning("edit_message chamado sem message_id — ignorando")
+            return False
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": True,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        try:
+            resp = self._session.post(
+                f"{self.base_url}/editMessageText", json=payload, timeout=self._timeout
+            )
+            return resp.ok
+        except requests.RequestException:
+            logger.warning("editMessageText falhou", exc_info=True)
+            return False
+
+    def answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
+        """POST /answerCallbackQuery. Confirma o clique no botão (Telegram exige)."""
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        try:
+            resp = self._session.post(
+                f"{self.base_url}/answerCallbackQuery", json=payload, timeout=self._timeout
+            )
+            return resp.ok
+        except requests.RequestException:
+            logger.warning("answerCallbackQuery falhou", exc_info=True)
+            return False
 
     def _send_to(
-        self, chat_id: int | str, text: str, parse_mode: str
+        self,
+        chat_id: int | str,
+        text: str,
+        parse_mode: str,
+        *,
+        reply_markup: dict | None = None,
     ) -> BroadcastResult:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
@@ -96,6 +161,8 @@ class TelegramNotifier:
             "parse_mode": parse_mode,
             "disable_web_page_preview": True,
         }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         backoff = 2.0
         last_status: int | None = None
         last_error: str | None = None
@@ -163,9 +230,9 @@ def format_message(
     """Monta MarkdownV2 — `is_first_open=True` quando saímos de vazio para com vagas."""
     detected_at = detected_at or datetime.now().astimezone()
     title = (
-        f"🚨 *Vagas CIN abertas em {escape_md_v2(municipio_nome.upper())}*"
+        f"🟢 *Vagas CIN abertas em {escape_md_v2(municipio_nome.upper())}*"
         if is_first_open
-        else f"✨ *Novas datas CIN em {escape_md_v2(municipio_nome.upper())}*"
+        else f"🟢 *Novas datas CIN em {escape_md_v2(municipio_nome.upper())}*"
     )
     lines = [title, ""]
 

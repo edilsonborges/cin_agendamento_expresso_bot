@@ -353,11 +353,11 @@ def cmd_run(settings: Settings, *, once: bool = False) -> int:
 
 
 def cmd_serve(settings: Settings) -> int:
-    """Loop unificado: webhook HTTP + scheduler. Modo de produção interativo."""
+    """Loop unificado: webhook HTTP + scheduler multi-município. Modo de produção interativo."""
     require_goias(settings)
     require_telegram(settings, need_chat_id=False)  # chat_ids vêm via webhook
 
-    from .command_handler import CommandHandler
+    from .command_handler import CommandHandler, TelegramAction
     from .subscriber_store import SubscriberStore
     from .webhook_server import WebhookServer
 
@@ -371,16 +371,39 @@ def cmd_serve(settings: Settings) -> int:
 
     client = ExpressoClient(settings.goias_oauth_basic, settings.goias_referer)
     notifier = TelegramNotifier(settings.telegram_bot_token)  # sem chat_id, broadcast-ready
-    store = StateStore(_state_path(settings.cod_municipio))
+
+    state_stores: dict[int, StateStore] = {}
+
+    def state_factory(cod: int) -> StateStore:
+        if cod not in state_stores:
+            state_stores[cod] = StateStore(PROJECT_ROOT / f"state-{cod}.json")
+        return state_stores[cod]
+
     scheduler = Scheduler(
-        settings=settings, client=client, notifier=notifier,
-        store=store, subscriber_store=subs,
+        settings=settings,
+        client=client,
+        notifier=notifier,
+        state_factory=state_factory,
+        subscriber_store=subs,
     )
 
     handler = CommandHandler(subs, status_provider=scheduler.snapshot)
 
-    def deliver(resp):
-        notifier._send_to(resp.chat_id, resp.text, parse_mode="")
+    def deliver(actions: list) -> None:
+        for a in actions:
+            if a.kind == "send":
+                notifier.send_to(
+                    a.chat_id, a.text, parse_mode="", reply_markup=a.reply_markup
+                )
+            elif a.kind == "edit":
+                notifier.edit_message(
+                    a.chat_id, a.message_id, a.text,
+                    parse_mode="", reply_markup=a.reply_markup,
+                )
+            elif a.kind == "answer_callback":
+                notifier.answer_callback_query(a.callback_query_id, a.text)
+            else:
+                logger.warning("ação desconhecida kind=%s — ignorando", a.kind)
 
     server = WebhookServer(
         host="0.0.0.0",
@@ -388,7 +411,7 @@ def cmd_serve(settings: Settings) -> int:
         secret_token=secret,
         webhook_path=settings.webhook_path,
         command_handler=handler,
-        on_command_response=deliver,
+        on_actions=deliver,
         status_provider=scheduler.snapshot,
     )
 
@@ -405,24 +428,45 @@ def cmd_serve(settings: Settings) -> int:
 
 
 def _serve_loop(server, scheduler, settings) -> None:
-    """Loop integrado: handle_request_nonblocking + scheduler.run_once a cada intervalo."""
-    next_poll = time.monotonic()
+    """Loop integrado: handle_request_nonblocking + scheduler.run_once.
+
+    Em modo multi-município, o Scheduler mantém cronograma independente por
+    município (`_next_per_municipio`) com jitter aleatório, evitando bater
+    todos ao mesmo tempo. Aqui só damos um tick curto (~3s) pra que ele
+    decida quais já venceram.
+    """
+    TICK_SECONDS = 3
+    next_tick = time.monotonic()
+    last_municipios = (
+        len(scheduler._subscriber_store.municipios_distintos())
+        if scheduler._subscriber_store
+        else 0
+    )
     logger.info(
-        "serve iniciado port=%d intervalo=%ds",
-        settings.webhook_port, settings.poll_interval_seconds,
+        "serve iniciado port=%d intervalo=%ds±%ds verbose=%s",
+        settings.webhook_port,
+        settings.poll_interval_seconds,
+        settings.jitter_seconds,
+        settings.verbose_polls,
     )
     while scheduler._running:
         server.handle_request_nonblocking()
         now = time.monotonic()
-        if now >= next_poll:
+        if scheduler._subscriber_store is not None:
+            curr = len(scheduler._subscriber_store.municipios_distintos())
+            if curr > last_municipios:
+                logger.info("novo município ativado — poll imediato no próximo tick")
+                # Reseta cronogramas pra processar o município novo já no próximo tick.
+                scheduler._next_per_municipio.clear()
+                next_tick = now
+            last_municipios = curr
+        if now >= next_tick:
             try:
                 scheduler.run_once()
                 scheduler._backoff.reset()
-                next_poll = now + scheduler._next_interval()
             except Exception:
-                logger.exception("erro no scheduler.run_once — backoff")
-                wait = scheduler._backoff.next_wait()
-                next_poll = now + wait
+                logger.exception("erro no scheduler.run_once — continuando")
+            next_tick = time.monotonic() + TICK_SECONDS
     logger.info("serve encerrado")
 
 

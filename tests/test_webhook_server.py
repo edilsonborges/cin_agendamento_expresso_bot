@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import socket
 import threading
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import Iterator
 import pytest
 import requests
 
-from bot.command_handler import CommandHandler, CommandResponse
+from bot.command_handler import CommandHandler, TelegramAction
 from bot.subscriber_store import SubscriberStore
 from bot.webhook_server import WebhookServer
 
@@ -42,7 +41,7 @@ def server(free_port: int, handler: CommandHandler) -> Iterator[WebhookServer]:
         secret_token=SECRET,
         webhook_path="/telegram/webhook",
         command_handler=handler,
-        on_command_response=lambda resp: None,
+        on_actions=lambda actions: None,
     )
     stop = threading.Event()
 
@@ -130,12 +129,12 @@ def test_post_invalid_json_returns_200_anyway(server, free_port):
     assert resp.status_code == 200
 
 
-def test_command_response_callback_invoked(free_port: int, tmp_path: Path):
-    """on_command_response recebe a CommandResponse pra envio ao Telegram."""
+def test_actions_callback_invoked(free_port: int, tmp_path: Path):
+    """on_actions recebe a lista de TelegramAction pra envio ao Telegram."""
     store = SubscriberStore(tmp_path / "subs.json")
     cmd_handler = CommandHandler(store, status_provider=lambda: {})
 
-    received: list[CommandResponse] = []
+    received: list[list[TelegramAction]] = []
 
     srv = WebhookServer(
         host="127.0.0.1",
@@ -143,12 +142,14 @@ def test_command_response_callback_invoked(free_port: int, tmp_path: Path):
         secret_token=SECRET,
         webhook_path="/telegram/webhook",
         command_handler=cmd_handler,
-        on_command_response=lambda r: received.append(r),
+        on_actions=lambda actions: received.append(actions),
     )
     stop = threading.Event()
+
     def loop():
         while not stop.is_set():
             srv.handle_request_nonblocking()
+
     t = threading.Thread(target=loop, daemon=True)
     t.start()
     try:
@@ -159,6 +160,7 @@ def test_command_response_callback_invoked(free_port: int, tmp_path: Path):
             timeout=2,
         )
         import time
+
         for _ in range(20):
             if received:
                 break
@@ -169,5 +171,9 @@ def test_command_response_callback_invoked(free_port: int, tmp_path: Path):
         t.join(timeout=2)
 
     assert len(received) == 1
-    assert received[0].chat_id == 111
-    assert "iniciado" in received[0].text.lower()
+    actions = received[0]
+    assert actions, "esperado pelo menos uma ação"
+    a = actions[0]
+    assert a.kind == "send"
+    assert a.chat_id == 111
+    assert "selecione" in a.text.lower()

@@ -78,6 +78,7 @@ def test_require_goias_falha_sem_basic():
         webhook_port=8080,
         webhook_path="/telegram/webhook",
         webhook_secret_token="",
+        verbose_polls=False,
     )
     with pytest.raises(RuntimeError, match="GOIAS_OAUTH_BASIC"):
         require_goias(s)
@@ -97,6 +98,7 @@ def test_require_telegram_run_precisa_chat_id():
         webhook_port=8080,
         webhook_path="/telegram/webhook",
         webhook_secret_token="",
+        verbose_polls=False,
     )
     with pytest.raises(RuntimeError, match="TELEGRAM_CHAT_ID"):
         require_telegram(s, need_chat_id=True)
@@ -117,6 +119,7 @@ def test_require_telegram_falha_sem_token():
         webhook_port=8080,
         webhook_path="/telegram/webhook",
         webhook_secret_token="",
+        verbose_polls=False,
     )
     with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
         require_telegram(s, need_chat_id=False)
@@ -136,6 +139,7 @@ def test_chat_id_int_converte():
         webhook_port=8080,
         webhook_path="/telegram/webhook",
         webhook_secret_token="",
+        verbose_polls=False,
     )
     assert s.has_chat_id
     assert s.chat_id_int == 12345

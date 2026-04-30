@@ -19,11 +19,11 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable
 
-from .command_handler import CommandHandler, CommandResponse
+from .command_handler import CommandHandler, TelegramAction
 
 logger = logging.getLogger(__name__)
 
-ResponseCallback = Callable[[CommandResponse], None]
+ActionsCallback = Callable[[list[TelegramAction]], None]
 
 
 class WebhookServer:
@@ -35,14 +35,14 @@ class WebhookServer:
         secret_token: str,
         webhook_path: str,
         command_handler: CommandHandler,
-        on_command_response: ResponseCallback,
+        on_actions: ActionsCallback,
         status_provider: Callable[[], dict] | None = None,
         socket_timeout: float = 0.1,
     ) -> None:
         self._secret = secret_token
         self._webhook_path = webhook_path
         self._command_handler = command_handler
-        self._on_response = on_command_response
+        self._on_actions = on_actions
         self._status_provider = status_provider or (lambda: {})
 
         cls = self  # capturar para o request handler
@@ -74,9 +74,9 @@ class WebhookServer:
                     logger.warning("webhook POST com JSON inválido — descartando")
                     return
                 try:
-                    response = cls._command_handler.handle_update(update)
-                    if response is not None:
-                        cls._on_response(response)
+                    actions = cls._command_handler.handle_update(update)
+                    if actions:
+                        cls._on_actions(actions)
                 except Exception:
                     logger.exception("erro processando update — ignorado")
 
@@ -89,7 +89,7 @@ class WebhookServer:
                     return
                 payload = {
                     "status": "ok",
-                    "subscribers": len(cls._command_handler._store.all()),
+                    "subscribers": len(cls._command_handler._store.all_chats()),
                     **cls._status_provider(),
                 }
                 body = json.dumps(payload).encode("utf-8")

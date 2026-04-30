@@ -31,6 +31,7 @@ def _settings(**overrides: Any) -> Settings:
         webhook_port=8080,
         webhook_path="/telegram/webhook",
         webhook_secret_token="",
+        verbose_polls=False,
     )
     base.update(overrides)
     return Settings(**base)
@@ -308,6 +309,7 @@ def test_scheduler_skips_when_subscribers_empty(tmp_path, monkeypatch):
         cod_municipio=25300, id_senha=58, log_level="INFO",
         goias_oauth_basic="b", goias_referer="r",
         webhook_port=8080, webhook_path="/h", webhook_secret_token="s",
+        verbose_polls=False,
     )
     client = MagicMock()
     store = StateStore(tmp_path / "state.json")
@@ -325,7 +327,7 @@ def test_scheduler_skips_when_subscribers_empty(tmp_path, monkeypatch):
 
 
 def test_scheduler_broadcasts_on_diff(tmp_path, monkeypatch):
-    """Com subscribers + vagas novas → broadcast pra cada um."""
+    """Com subscribers + vagas novas → broadcast pra cada um (caminho legado)."""
     from unittest.mock import MagicMock
     from bot.scheduler import Scheduler
     from bot.state_store import StateStore
@@ -337,6 +339,7 @@ def test_scheduler_broadcasts_on_diff(tmp_path, monkeypatch):
         cod_municipio=25300, id_senha=58, log_level="INFO",
         goias_oauth_basic="b", goias_referer="r",
         webhook_port=8080, webhook_path="/h", webhook_secret_token="s",
+        verbose_polls=False,
     )
     client = MagicMock()
     client.fetch_datas.return_value = [
@@ -344,8 +347,8 @@ def test_scheduler_broadcasts_on_diff(tmp_path, monkeypatch):
     ]
     store = StateStore(tmp_path / "state.json")
     subs = SubscriberStore(tmp_path / "subs.json")
-    subs.add(111)
-    subs.add(222)
+    subs.add_municipio(111, 25300)
+    subs.add_municipio(222, 25300)
 
     notifier = MagicMock(spec=TelegramNotifier)
     notifier.broadcast.return_value = [
@@ -353,6 +356,7 @@ def test_scheduler_broadcasts_on_diff(tmp_path, monkeypatch):
         BroadcastResult(222, True, 200, None),
     ]
 
+    # Caminho legado (store=, sem state_factory) — broadcast unificado.
     sch = Scheduler(
         settings=settings, client=client, notifier=notifier,
         store=store, subscriber_store=subs,
@@ -366,7 +370,7 @@ def test_scheduler_broadcasts_on_diff(tmp_path, monkeypatch):
 
 
 def test_scheduler_removes_403_subscribers(tmp_path):
-    """Broadcast com 403 → chat removido do subscriber_store."""
+    """Broadcast com 403 → chat removido do subscriber_store (caminho legado)."""
     from unittest.mock import MagicMock
     from bot.scheduler import Scheduler
     from bot.state_store import StateStore
@@ -378,6 +382,7 @@ def test_scheduler_removes_403_subscribers(tmp_path):
         cod_municipio=25300, id_senha=58, log_level="INFO",
         goias_oauth_basic="b", goias_referer="r",
         webhook_port=8080, webhook_path="/h", webhook_secret_token="s",
+        verbose_polls=False,
     )
     client = MagicMock()
     client.fetch_datas.return_value = [
@@ -385,8 +390,8 @@ def test_scheduler_removes_403_subscribers(tmp_path):
     ]
     store = StateStore(tmp_path / "state.json")
     subs = SubscriberStore(tmp_path / "subs.json")
-    subs.add(111)
-    subs.add(222)
+    subs.add_municipio(111, 25300)
+    subs.add_municipio(222, 25300)
 
     notifier = MagicMock(spec=TelegramNotifier)
     notifier.broadcast.return_value = [
@@ -400,5 +405,5 @@ def test_scheduler_removes_403_subscribers(tmp_path):
     )
     sch.run_once()
 
-    assert subs.contains(111)
-    assert not subs.contains(222), "subscriber com 403 deveria ter sido removido"
+    assert subs.has_chat(111)
+    assert not subs.has_chat(222), "subscriber com 403 deveria ter sido removido"

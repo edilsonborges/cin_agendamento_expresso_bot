@@ -44,3 +44,5 @@ dist/
 
 # Documentação interna (não vai pro remoto)
 ai-docs/tasks/
+.run/
+cloudflared.log

@@ -43,6 +43,7 @@ class Settings:
     webhook_port: int
     webhook_path: str
     webhook_secret_token: str
+    verbose_polls: bool
 
     @property
     def has_chat_id(self) -> bool:
@@ -85,6 +86,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         webhook_port=_get_int("WEBHOOK_PORT", DEFAULT_WEBHOOK_PORT),
         webhook_path=os.getenv("WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH).strip(),
         webhook_secret_token=os.getenv("WEBHOOK_SECRET_TOKEN", "").strip(),
+        verbose_polls=os.getenv("VERBOSE_POLLS", "").strip().lower() in ("1", "true", "yes"),
     )
 
 

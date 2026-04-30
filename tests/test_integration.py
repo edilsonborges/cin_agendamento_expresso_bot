@@ -37,6 +37,7 @@ def _make_settings(cod: int = 25300) -> Settings:
         webhook_port=8080,
         webhook_path="/telegram/webhook",
         webhook_secret_token="",
+        verbose_polls=False,
     )
 
 

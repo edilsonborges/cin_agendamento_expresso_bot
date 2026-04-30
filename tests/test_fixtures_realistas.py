@@ -54,7 +54,7 @@ def test_payload_anicuns_format_message_truncamento_correto():
     diff = compute_diff({}, curr)
     msg = format_message("Anicuns", diff, is_first_open=True)
 
-    assert "🚨" in msg
+    assert "🟢" in msg
     assert "ANICUNS" in msg
     assert "27 datas" in msg
     assert "19/05/2026" in msg

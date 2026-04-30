@@ -11,9 +11,8 @@ from pathlib import Path
 import pytest
 import requests
 
-from bot.command_handler import CommandHandler
+from bot.command_handler import CommandHandler, TelegramAction
 from bot.subscriber_store import SubscriberStore
-from bot.telegram_notifier import TelegramNotifier
 from bot.webhook_server import WebhookServer
 
 
@@ -29,13 +28,13 @@ def free_port() -> int:
     return p
 
 
-def test_init_then_stop_via_webhook_persists(tmp_path: Path, free_port: int):
-    """POST /init → /stop pelo webhook deve atualizar subscribers.json."""
+def test_wizard_completo_via_webhook_persiste(tmp_path: Path, free_port: int):
+    """Wizard /init → toggle → done deve persistir chat+município no subscribers.json."""
     subs_path = tmp_path / "subs.json"
     store = SubscriberStore(subs_path)
     handler = CommandHandler(store, status_provider=lambda: {})
 
-    responses_log: list = []
+    actions_log: list[list[TelegramAction]] = []
 
     srv = WebhookServer(
         host="127.0.0.1",
@@ -43,7 +42,7 @@ def test_init_then_stop_via_webhook_persists(tmp_path: Path, free_port: int):
         secret_token=SECRET,
         webhook_path="/telegram/webhook",
         command_handler=handler,
-        on_command_response=lambda r: responses_log.append(r),
+        on_actions=lambda a: actions_log.append(a),
     )
 
     stop_evt = threading.Event()
@@ -55,41 +54,69 @@ def test_init_then_stop_via_webhook_persists(tmp_path: Path, free_port: int):
     t = threading.Thread(target=loop, daemon=True)
     t.start()
 
+    def post(body):
+        return requests.post(
+            f"http://127.0.0.1:{free_port}/telegram/webhook",
+            json=body,
+            headers={"X-Telegram-Bot-Api-Secret-Token": SECRET},
+            timeout=2,
+        )
+
+    def wait_actions(min_count: int) -> None:
+        for _ in range(40):
+            if len(actions_log) >= min_count:
+                return
+            time.sleep(0.05)
+
     try:
-        url = f"http://127.0.0.1:{free_port}/telegram/webhook"
-        h = {"X-Telegram-Bot-Api-Secret-Token": SECRET}
+        # /init
+        assert post({
+            "update_id": 1,
+            "message": {"chat": {"id": 555}, "text": "/init"},
+        }).status_code == 200
+        wait_actions(1)
+        # store ainda intacto após /init (rascunho em memória)
+        assert not subs_path.exists() or store.has_chat(555) is False
 
-        # /init de chat 555
-        r1 = requests.post(
-            url,
-            json={"update_id": 1, "message": {"chat": {"id": 555}, "text": "/init"}},
-            headers=h, timeout=2,
-        )
-        assert r1.status_code == 200
+        # toggle de Goiânia (25300)
+        assert post({
+            "update_id": 2,
+            "callback_query": {
+                "id": "cb1",
+                "data": "tog:25300",
+                "message": {"message_id": 10, "chat": {"id": 555}},
+            },
+        }).status_code == 200
+        wait_actions(2)
 
-        for _ in range(20):
-            if responses_log:
-                break
-            time.sleep(0.05)
-        assert any(r.chat_id == 555 and "iniciado" in r.text.lower() for r in responses_log)
+        # done — agora persiste
+        assert post({
+            "update_id": 3,
+            "callback_query": {
+                "id": "cb2",
+                "data": "done",
+                "message": {"message_id": 10, "chat": {"id": 555}},
+            },
+        }).status_code == 200
+        wait_actions(3)
 
         data = json.loads(subs_path.read_text())
-        assert 555 in data["subscribers"]
+        assert "555" in data["subscribers"]
+        assert 25300 in data["subscribers"]["555"]["municipios"]
 
-        # /stop de chat 555
-        r2 = requests.post(
-            url,
-            json={"update_id": 2, "message": {"chat": {"id": 555}, "text": "/stop"}},
-            headers=h, timeout=2,
-        )
-        assert r2.status_code == 200
-        for _ in range(20):
-            if len(responses_log) >= 2:
-                break
-            time.sleep(0.05)
+        # pause via callback — limpa o chat
+        assert post({
+            "update_id": 4,
+            "callback_query": {
+                "id": "cb3",
+                "data": "pause",
+                "message": {"message_id": 10, "chat": {"id": 555}},
+            },
+        }).status_code == 200
+        wait_actions(4)
 
         data = json.loads(subs_path.read_text())
-        assert data["subscribers"] == []
+        assert data["subscribers"] == {}
     finally:
         stop_evt.set()
         srv.close()

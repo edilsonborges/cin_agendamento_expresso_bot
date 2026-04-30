@@ -38,7 +38,7 @@ def test_format_message_first_open_inclui_emoji_alerta():
     )
     detected = datetime(2026, 4, 29, 18, 14)
     msg = format_message("Goiânia", diff, is_first_open=True, detected_at=detected)
-    assert "🚨" in msg
+    assert "🟢" in msg
     assert "GOIÂNIA" in msg
     assert "Vapt Centro" in msg
     assert "2 datas" in msg
@@ -54,7 +54,7 @@ def test_format_message_novas_datas_inclui_emoji_sparkles():
         total_atual_por_unidade={"Vapt Centro": 9},
     )
     msg = format_message("Goiânia", diff, is_first_open=False)
-    assert "✨" in msg
+    assert "🟢" in msg
     assert "Total atual" in msg
     assert "9 datas" in msg
 

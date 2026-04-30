@@ -20,6 +20,7 @@ def make_settings(token: str = "TOKEN_TESTE", secret: str = "the-secret") -> Set
         goias_oauth_basic="b", goias_referer="r",
         webhook_port=8080, webhook_path="/telegram/webhook",
         webhook_secret_token=secret,
+        verbose_polls=False,
     )
 
 
