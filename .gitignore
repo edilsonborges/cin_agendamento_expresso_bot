@@ -1,0 +1,43 @@
+# Secrets / config local
+.env
+.env.local
+.env.*.local
+
+# Estado persistido (criado em runtime)
+state.json
+state.lock
+state-*.json
+
+# Logs
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Documentação interna (não vai pro remoto)
+ai-docs/tasks/
