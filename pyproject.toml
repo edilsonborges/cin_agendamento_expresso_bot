@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cin_agendamento_expresso_bot"
+version = "0.1.0"
+description = "Bot de Telegram que monitora vagas para CIN no portal Vapt Vupt (Goiás Digital)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "edilson" }]
+dependencies = [
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "responses>=0.25",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-requests>=2.31",
+]
+
+[project.scripts]
+cin-bot = "bot.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["bot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+files = ["bot"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true

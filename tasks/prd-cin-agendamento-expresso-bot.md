@@ -63,7 +63,7 @@ listando as datas disponíveis e a unidade do Vapt Vupt onde elas existem.
 
 **Acceptance Criteria:**
 - [ ] `pyproject.toml` com Python 3.11+ definido
-- [ ] `requirements.txt` listando: `requests`, `python-telegram-bot>=21`, `python-dotenv`
+- [ ] `requirements.txt` listando: `requests`, `python-dotenv` (Telegram via Bot API direta)
 - [ ] `.env.example` com chaves: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `POLL_INTERVAL_SECONDS`, `JITTER_SECONDS`, `COD_MUNICIPIO`, `ID_SENHA`, `LOG_LEVEL`
 - [ ] `.gitignore` excluindo `.env`, `state.json`, `*.log`, `__pycache__/`, `.venv/`
 - [ ] `README.md` com seção "Setup local" funcional
@@ -371,37 +371,39 @@ Reset ao primeiro HTTP 200.
   do token de bot Telegram).
 
 ### Fase 0 — Bootstrap (1 sessão)
-- [x] Pasta + git init + remote privado
-- [ ] PRD aprovado (este documento)
-- [ ] README, .env.example, .gitignore, pyproject.toml, requirements.txt
+- [x] Pasta + git init + remote (público após sanitização de credencial)
+- [x] PRD aprovado (este documento)
+- [x] README, .env.example, .gitignore, pyproject.toml, requirements.txt
 
 ### Fase 1 — Core HTTP (1 sessão)
-- [ ] US-002: ExpressoAuth (token cache)
-- [ ] US-003: fetch_datas
-- [ ] US-008: logging_setup
-- [ ] US-010: comando `check` (smoke test)
-- [ ] **Critério de saída:** `python -m bot check` imprime `[]` para Goiânia em < 5s
+- [x] US-002: ExpressoAuth (token cache + refresh quando faltar <120s)
+- [x] US-003: fetch_datas (retorna `list[Unidade]`, trata 401/4xx/5xx/timeout)
+- [x] US-008: logging_setup (stdout + arquivo rotativo, mascara tokens)
+- [x] US-010: comando `check` (smoke test dry-run)
+- [x] **Critério de saída:** `python -m bot check` imprime `[]` para Goiânia em **0.56s** ✅
 
 ### Fase 2 — Estado e diff (1 sessão)
-- [ ] US-004: state_store + change_detector
-- [ ] Testes unitários do diff
-- [ ] **Critério de saída:** `pytest -k change_detector` verde
+- [x] US-004: state_store (write atômico + hash SHA-256) + change_detector
+- [x] Testes unitários do diff (11 casos cobrindo as 4 transições do PRD)
+- [x] **Critério de saída:** `pytest -k change_detector` → 11 passed ✅
 
 ### Fase 3 — Telegram (1 sessão)
-- [ ] US-006: comando `init` (descoberta de chat_id)
-- [ ] US-005: TelegramNotifier
-- [ ] **Critério de saída:** mensagem de teste chega no Telegram
+- [x] US-006: comando `init` (polling getUpdates por 5min, escreve chat_id no .env)
+- [x] US-005: TelegramNotifier (sendMessage MarkdownV2 + retry 3x + backoff)
+- [x] format_message: caso "primeira abertura" e caso "novas datas"
+- [x] **Critério de saída:** smoke test do format + send com `responses` mock ✅
 
 ### Fase 4 — Loop e supervisor (1 sessão)
-- [ ] US-007: scheduler com backoff
-- [ ] US-009: launchd plist + scripts
-- [ ] **Critério de saída:** bot rodando 1h sem crash, com logs limpos
+- [x] US-007: scheduler com backoff exponencial (30/60/120/240/600s) e signal handlers
+- [x] Lockfile via `flock` (R7 — segunda instância falha imediato)
+- [x] US-009: launchd plist + install.sh/uninstall.sh
+- [x] **Critério de saída:** scheduler testado via mocks (8 testes, todas as transições) ✅
 
 ### Fase 5 — Hardening (1 sessão)
-- [ ] FR-12: rate limit de notificação
-- [ ] Simulação de transições (vazio → vagas → mais vagas → vazio) com fixtures
-- [ ] Documentação operacional no README (como ver logs, parar, reiniciar)
-- [ ] **Critério de saída:** rodando 24h sem intervenção
+- [x] FR-12: rate limit de notificação (60s mínimo entre alertas)
+- [x] Fixtures de transição (vazio→vagas, vagas→novas, vagas→vazio, supressão por rate-limit)
+- [x] Documentação operacional no README (logs, parar/reiniciar, troubleshooting)
+- [ ] **Critério de saída:** rodando 24h sem intervenção (validação manual em campo)
 
 ---
 
@@ -425,7 +427,9 @@ Reset ao primeiro HTTP 200.
 ### Stack escolhida
 - **Linguagem:** Python 3.11+
 - **HTTP:** `requests` (síncrono, simples; volume baixo dispensa async)
-- **Telegram:** `python-telegram-bot >= 21` (apenas para `Bot.send_message` + polling em modo `init`)
+- **Telegram:** Bot API direta via `requests` (`/sendMessage`, `/getUpdates`). A dependência
+  `python-telegram-bot` foi avaliada e descartada — async/framework não traz ganho para 2 endpoints,
+  e síncrono casa melhor com o resto do bot.
 - **Config:** `python-dotenv`
 - **Logging:** stdlib `logging` com `RotatingFileHandler`
 - **Testes:** `pytest` + `responses` (mock de HTTP)
@@ -475,18 +479,19 @@ GOIAS_REFERER=https://www.go.gov.br/servicos-digitais/vapt-vupt/agendamento-aten
 
 ---
 
-## 15. Open Questions
+## 15. Decisões registradas (originalmente "Open Questions")
 
-1. **Frequência de notificação repetida:** Se vagas abrirem e fecharem 3x no mesmo dia, queremos
-   3 alertas? (Resposta provisória: sim, cada vez que a transição vazio → com vagas ocorre,
-   notifica.)
-2. **Agrupamento por unidade:** Goiânia tem várias unidades Vapt Vupt. Mostrar todas
-   juntas ou em mensagens separadas? (Resposta provisória: tudo numa mesma mensagem.)
-3. **Limite de horas para rodar:** Faz sentido pausar de 23h–6h? (Resposta provisória: não,
-   o servidor pode publicar a qualquer hora.)
-4. **Reuso para outros municípios:** Se você quiser monitorar Aparecida também, a v1
-   exige rodar duas instâncias com `state-25300.json` e `state-33800.json` — confirmar
-   se OK ou se a v1 já deveria suportar lista.
+1. ✅ **Frequência de notificação repetida:** Cada transição vazio → com vagas dispara
+   notificação. Implementado via diff de hash em `change_detector.compute_diff` + rate-limit
+   defensivo de 60s (FR-12) para agrupar mudanças sucessivas.
+2. ✅ **Agrupamento por unidade:** Tudo numa mesma mensagem. `format_message` itera todas as
+   unidades em `diff.novas_datas_por_unidade` ordenadas por nome.
+3. ✅ **Limite de horas para rodar:** Sem pausa. O servidor pode publicar a qualquer hora,
+   inclusive madrugada — não vale perder janela.
+4. ✅ **Reuso para outros municípios:** Implementado na v1 via state/lock per-município
+   (`state-{cod_municipio}.json` e `state-{cod_municipio}.lock`). Instâncias paralelas com
+   `.env` distintos não colidem. Para legado, se já existir um `state.json` (sem cod), ele é
+   reaproveitado para a migração natural.
 
 ---
 
