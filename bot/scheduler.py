@@ -26,7 +26,8 @@ from .config import Settings
 from .errors import PermanentError, TransientError
 from .expresso_client import ExpressoClient
 from .state_store import State, StateStore, hash_datas, now_iso
-from .telegram_notifier import TelegramNotifier, format_message
+from .subscriber_store import SubscriberStore
+from .telegram_notifier import BroadcastResult, TelegramNotifier, format_message
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ class Scheduler:
         client: ExpressoClient,
         notifier: TelegramNotifier | None,
         store: StateStore,
+        subscriber_store: SubscriberStore | None = None,
         municipio_nome: str = DEFAULT_MUNICIPIO_NOME,
         dry_run: bool = False,
     ) -> None:
@@ -90,10 +92,21 @@ class Scheduler:
         self._client = client
         self._notifier = notifier
         self._store = store
+        self._subscriber_store = subscriber_store
         self._municipio_nome = municipio_nome
         self._dry_run = dry_run
         self._running = True
         self._backoff = _Backoff()
+
+    def snapshot(self) -> dict:
+        """Retorna estado leve para o /status do Telegram."""
+        state = self._store.load()
+        return {
+            "last_check_at": state.last_check_at,
+            "last_change_at": state.last_change_at,
+            "unidades_com_vagas": len(state.datas_por_unidade),
+            "total_polls": state.total_polls,
+        }
 
     def stop(self, *_args: object) -> None:
         if self._running:
@@ -134,6 +147,11 @@ class Scheduler:
         logger.info("loop encerrado")
 
     def run_once(self) -> Diff:
+        # Modo broadcast: pula se nenhum subscriber
+        if self._subscriber_store is not None and self._subscriber_store.is_empty():
+            logger.debug("[poll] sem subscribers — skip")
+            return compute_diff({}, {})  # diff vazio
+
         state = self._store.load()
         unidades = self._client.fetch_datas(self._settings.id_senha, self._settings.cod_municipio)
         curr_map = unidades_to_map(unidades)
@@ -155,12 +173,24 @@ class Scheduler:
                     diff,
                     is_first_open=is_first_open,
                 )
-                if self._notifier.send_text(msg):
-                    action = "notified"
-                    state.last_notification_at = now_iso()
-                    state.total_notifications += 1
+                if self._subscriber_store is not None:
+                    chat_ids = list(self._subscriber_store.all())
+                    results = self._notifier.broadcast(chat_ids, msg)
+                    ok_count = sum(1 for r in results if r.ok)
+                    self._handle_broadcast_results(results)
+                    if ok_count > 0:
+                        action = f"broadcast({ok_count}/{len(results)})"
+                        state.last_notification_at = now_iso()
+                        state.total_notifications += 1
+                    else:
+                        action = "broadcast-all-failed"
                 else:
-                    action = "notify-failed"
+                    if self._notifier.send_text(msg):
+                        action = "notified"
+                        state.last_notification_at = now_iso()
+                        state.total_notifications += 1
+                    else:
+                        action = "notify-failed"
 
         if not self._dry_run:
             state.total_polls += 1
@@ -168,7 +198,9 @@ class Scheduler:
         state.id_senha = self._settings.id_senha
         state.cod_municipio = self._settings.cod_municipio
 
-        if action in ("notified", "noop", "would-notify(dry-run)"):
+        if action in ("notified", "noop", "would-notify(dry-run)") or action.startswith(
+            "broadcast("
+        ):
             if state.hash != curr_hash:
                 state.last_change_at = now_iso()
             state.datas_por_unidade = curr_map
@@ -184,6 +216,17 @@ class Scheduler:
             action,
         )
         return diff
+
+    def _handle_broadcast_results(self, results: list[BroadcastResult]) -> None:
+        if self._subscriber_store is None:
+            return
+        for r in results:
+            if not r.ok and r.http_status == 403:
+                self._subscriber_store.remove(r.chat_id)
+                logger.info(
+                    "removido subscriber chat_id=***%s status=403",
+                    str(r.chat_id)[-2:],
+                )
 
     def _record_error(self) -> None:
         """Incrementa contador de erros, defensivo a falhas de I/O."""

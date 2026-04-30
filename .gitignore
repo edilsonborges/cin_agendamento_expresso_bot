@@ -8,6 +8,7 @@ state.json
 state.lock
 state-*.json
 state-*.lock
+subscribers.json
 
 # Logs
 *.log

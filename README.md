@@ -60,7 +60,48 @@ python -m bot run
 | `python -m bot doctor`  | Diagnóstico: config + auth Goiás + Telegram `/getMe`. Não envia msg. Exit 1 se falha. |
 | `python -m bot run`     | Loop de produção com lockfile, signal handlers, backoff e rate-limit. |
 | `python -m bot run --once` | Executa **1 iteração** e sai (útil para cron externo em vez de loop interno). |
+| `python -m bot serve`         | Modo interativo: HTTP webhook + scheduler. /init e /stop pelo Telegram. |
+| `python -m bot setup-webhook` | Registra URL pública no Telegram (`<URL>` ou `--delete`). Idempotente. |
 | `python -m bot --version` | Versão atual. |
+
+---
+
+## Modo interativo (webhook) — `/init` e `/stop` no Telegram
+
+O subcomando `serve` permite controlar o monitoramento direto pelo Telegram:
+
+- `/init` → começa a monitorar Goiânia (5min) e te avisa quando aparecer vaga
+- `/stop` → pausa o monitoramento (pra você)
+- `/status` → estado atual (ativo/idle, últimas verificações)
+
+### Como rodar localmente (com túnel temporário)
+
+```bash
+# Terminal 1 — sobe o bot
+python -m bot serve     # escuta em http://localhost:8080
+
+# Terminal 2 — abre um túnel HTTPS público
+cloudflared tunnel --url http://localhost:8080
+# saída: https://abc-xyz.trycloudflare.com
+
+# Terminal 3 — registra a URL no Telegram
+python -m bot setup-webhook https://abc-xyz.trycloudflare.com
+# (gera/usa o WEBHOOK_SECRET_TOKEN automaticamente)
+
+# Pronto: mande /init no @cin_agendamento_expresso_bot
+```
+
+### Em produção
+
+Use um túnel persistente (Cloudflare Tunnel nomeado, ngrok com domínio fixo, etc.)
+e mantenha o `python -m bot serve` rodando via launchd. URL muda? Basta rodar
+`python -m bot setup-webhook <nova-url>` de novo — é idempotente.
+
+### Para remover o webhook
+
+```bash
+python -m bot setup-webhook --delete
+```
 
 ---
 

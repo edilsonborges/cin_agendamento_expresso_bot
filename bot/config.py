@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 
-DEFAULT_POLL_INTERVAL = 180
+DEFAULT_POLL_INTERVAL = 300
 DEFAULT_JITTER = 30
 DEFAULT_COD_MUNICIPIO = 25300
 DEFAULT_ID_SENHA = 58
@@ -25,6 +25,8 @@ DEFAULT_REFERER = (
     "https://www.go.gov.br/servicos-digitais/vapt-vupt/"
     "agendamento-atendimento-presencial/novo/origem-rg"
 )
+DEFAULT_WEBHOOK_PORT = 8080
+DEFAULT_WEBHOOK_PATH = "/telegram/webhook"
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,9 @@ class Settings:
     log_level: str
     goias_oauth_basic: str
     goias_referer: str
+    webhook_port: int
+    webhook_path: str
+    webhook_secret_token: str
 
     @property
     def has_chat_id(self) -> bool:
@@ -77,6 +82,9 @@ def load_settings(env_path: Path | None = None) -> Settings:
         log_level=os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL).strip().upper(),
         goias_oauth_basic=os.getenv("GOIAS_OAUTH_BASIC", "").strip(),
         goias_referer=os.getenv("GOIAS_REFERER", DEFAULT_REFERER).strip(),
+        webhook_port=_get_int("WEBHOOK_PORT", DEFAULT_WEBHOOK_PORT),
+        webhook_path=os.getenv("WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH).strip(),
+        webhook_secret_token=os.getenv("WEBHOOK_SECRET_TOKEN", "").strip(),
     )
 
 

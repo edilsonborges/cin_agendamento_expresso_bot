@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+import secrets
 import sys
 import time
 from pathlib import Path
+
+import requests
 
 from . import __version__
 from .config import (
@@ -51,6 +54,34 @@ def _lock_path(cod_municipio: int) -> Path:
     return PROJECT_ROOT / f"state-{cod_municipio}.lock"
 
 
+def _ensure_secret_token(current: str) -> str:
+    """Devolve o secret atual ou gera um novo, persistindo no .env."""
+    if current:
+        return current
+    new = secrets.token_urlsafe(32)
+    _persist_env_kv("WEBHOOK_SECRET_TOKEN", new)
+    return new
+
+
+def _persist_env_kv(key: str, value: str) -> None:
+    """Atualiza/insere KEY=value no .env preservando demais linhas."""
+    path = ENV_PATH
+    line = f"{key}={value}"
+    if not path.exists():
+        path.write_text(line + "\n", encoding="utf-8")
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    found = False
+    for i, raw in enumerate(lines):
+        if raw.strip().startswith(f"{key}="):
+            lines[i] = line
+            found = True
+            break
+    if not found:
+        lines.append(line)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bot", description="cin_agendamento_expresso_bot")
     parser.add_argument(
@@ -69,6 +100,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="executa 1 iteração e sai (útil para cron externo em vez do loop interno)",
     )
+    setup_p = sub.add_parser(
+        "setup-webhook",
+        help="registra ou remove URL do webhook na API Telegram",
+    )
+    setup_p.add_argument(
+        "url",
+        nargs="?",
+        help="URL pública (ex: https://abc.trycloudflare.com)",
+    )
+    setup_p.add_argument("--delete", action="store_true", help="remove o webhook")
+    sub.add_parser(
+        "serve",
+        help="loop interativo: webhook HTTP + scheduler com /init e /stop",
+    )
 
     args = parser.parse_args(argv)
     settings = load_settings()
@@ -85,6 +130,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_doctor(settings)
         if args.cmd == "run":
             return cmd_run(settings, once=getattr(args, "once", False))
+        if args.cmd == "setup-webhook":
+            return cmd_setup_webhook(settings, url=args.url, delete=args.delete)
+        if args.cmd == "serve":
+            return cmd_serve(settings)
     except RuntimeError as exc:
         print(f"erro: {exc}", file=sys.stderr)
         return 1
@@ -243,6 +292,39 @@ def _doctor_check_config(settings: Settings) -> list[str]:
     return issues
 
 
+def cmd_setup_webhook(settings: Settings, *, url: str | None, delete: bool) -> int:
+    """Registra/remove URL do webhook na API do Telegram."""
+    require_telegram(settings, need_chat_id=False)
+    base = f"https://api.telegram.org/bot{settings.telegram_bot_token}"
+
+    if delete:
+        resp = requests.post(f"{base}/deleteWebhook", timeout=10)
+        ok = resp.ok and resp.json().get("ok") is True
+        if ok:
+            print("webhook removido")
+            return 0
+        print(f"falha ao remover webhook: {resp.text[:200]}", file=sys.stderr)
+        return 1
+
+    if not url:
+        print("erro: --url ou --delete obrigatório", file=sys.stderr)
+        return 2
+
+    secret = _ensure_secret_token(settings.webhook_secret_token)
+    full_url = url.rstrip("/") + settings.webhook_path
+    resp = requests.post(
+        f"{base}/setWebhook",
+        json={"url": full_url, "secret_token": secret},
+        timeout=10,
+    )
+    if not resp.ok or not resp.json().get("ok"):
+        print(f"falha: {resp.text[:300]}", file=sys.stderr)
+        return 1
+    print(f"webhook configurado: {full_url}")
+    print(f"(secret token gerado/usado e salvo em {ENV_PATH})")
+    return 0
+
+
 def cmd_run(settings: Settings, *, once: bool = False) -> int:
     require_goias(settings)
     require_telegram(settings, need_chat_id=True)
@@ -268,6 +350,80 @@ def cmd_run(settings: Settings, *, once: bool = False) -> int:
         logger.error("%s", exc)
         return 1
     return 0
+
+
+def cmd_serve(settings: Settings) -> int:
+    """Loop unificado: webhook HTTP + scheduler. Modo de produção interativo."""
+    require_goias(settings)
+    require_telegram(settings, need_chat_id=False)  # chat_ids vêm via webhook
+
+    from .command_handler import CommandHandler
+    from .subscriber_store import SubscriberStore
+    from .webhook_server import WebhookServer
+
+    secret = _ensure_secret_token(settings.webhook_secret_token)
+    if not secret:
+        print("erro: WEBHOOK_SECRET_TOKEN não configurado e falha ao gerar", file=sys.stderr)
+        return 1
+
+    subs_path = PROJECT_ROOT / "subscribers.json"
+    subs = SubscriberStore(subs_path)
+
+    client = ExpressoClient(settings.goias_oauth_basic, settings.goias_referer)
+    notifier = TelegramNotifier(settings.telegram_bot_token)  # sem chat_id, broadcast-ready
+    store = StateStore(_state_path(settings.cod_municipio))
+    scheduler = Scheduler(
+        settings=settings, client=client, notifier=notifier,
+        store=store, subscriber_store=subs,
+    )
+
+    handler = CommandHandler(subs, status_provider=scheduler.snapshot)
+
+    def deliver(resp):
+        notifier._send_to(resp.chat_id, resp.text, parse_mode="")
+
+    server = WebhookServer(
+        host="0.0.0.0",
+        port=settings.webhook_port,
+        secret_token=secret,
+        webhook_path=settings.webhook_path,
+        command_handler=handler,
+        on_command_response=deliver,
+        status_provider=scheduler.snapshot,
+    )
+
+    try:
+        with file_lock(_lock_path(settings.cod_municipio)):
+            scheduler.install_signal_handlers()
+            _serve_loop(server, scheduler, settings)
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        return 1
+    finally:
+        server.close()
+    return 0
+
+
+def _serve_loop(server, scheduler, settings) -> None:
+    """Loop integrado: handle_request_nonblocking + scheduler.run_once a cada intervalo."""
+    next_poll = time.monotonic()
+    logger.info(
+        "serve iniciado port=%d intervalo=%ds",
+        settings.webhook_port, settings.poll_interval_seconds,
+    )
+    while scheduler._running:
+        server.handle_request_nonblocking()
+        now = time.monotonic()
+        if now >= next_poll:
+            try:
+                scheduler.run_once()
+                scheduler._backoff.reset()
+                next_poll = now + scheduler._next_interval()
+            except Exception:
+                logger.exception("erro no scheduler.run_once — backoff")
+                wait = scheduler._backoff.next_wait()
+                next_poll = now + wait
+    logger.info("serve encerrado")
 
 
 def cmd_init(settings: Settings) -> int:

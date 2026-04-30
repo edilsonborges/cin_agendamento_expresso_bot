@@ -13,6 +13,8 @@ from bot.config import Settings
 from bot.expresso_client import Unidade
 from bot.scheduler import Scheduler, file_lock
 from bot.state_store import StateStore
+from bot.subscriber_store import SubscriberStore
+from bot.telegram_notifier import BroadcastResult, TelegramNotifier
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -26,6 +28,9 @@ def _settings(**overrides: Any) -> Settings:
         log_level="INFO",
         goias_oauth_basic="x",
         goias_referer="https://x",
+        webhook_port=8080,
+        webhook_path="/telegram/webhook",
+        webhook_secret_token="",
     )
     base.update(overrides)
     return Settings(**base)
@@ -288,3 +293,112 @@ def test_run_forever_aplica_backoff_em_transient(tmp_path: Path, monkeypatch):
     thread.join(timeout=3.0)
     assert not thread.is_alive()
     assert 30 in waits, f"backoff inicial 30s não aplicado; waits={waits}"
+
+
+def test_scheduler_skips_when_subscribers_empty(tmp_path, monkeypatch):
+    """Sem subscribers → não chama fetch_datas, retorna Diff vazio."""
+    from unittest.mock import MagicMock
+    from bot.scheduler import Scheduler
+    from bot.state_store import StateStore
+    from bot.config import Settings
+
+    settings = Settings(
+        telegram_bot_token="t", telegram_chat_id="",
+        poll_interval_seconds=300, jitter_seconds=30,
+        cod_municipio=25300, id_senha=58, log_level="INFO",
+        goias_oauth_basic="b", goias_referer="r",
+        webhook_port=8080, webhook_path="/h", webhook_secret_token="s",
+    )
+    client = MagicMock()
+    store = StateStore(tmp_path / "state.json")
+    subs = SubscriberStore(tmp_path / "subs.json")  # vazio
+
+    notifier = TelegramNotifier("TOKEN")  # sem chat_id, broadcast-ready
+
+    sch = Scheduler(
+        settings=settings, client=client, notifier=notifier,
+        store=store, subscriber_store=subs,
+    )
+    diff = sch.run_once()
+    assert client.fetch_datas.call_count == 0
+    assert diff.has_news is False
+
+
+def test_scheduler_broadcasts_on_diff(tmp_path, monkeypatch):
+    """Com subscribers + vagas novas → broadcast pra cada um."""
+    from unittest.mock import MagicMock
+    from bot.scheduler import Scheduler
+    from bot.state_store import StateStore
+    from bot.config import Settings
+
+    settings = Settings(
+        telegram_bot_token="t", telegram_chat_id="",
+        poll_interval_seconds=300, jitter_seconds=30,
+        cod_municipio=25300, id_senha=58, log_level="INFO",
+        goias_oauth_basic="b", goias_referer="r",
+        webhook_port=8080, webhook_path="/h", webhook_secret_token="s",
+    )
+    client = MagicMock()
+    client.fetch_datas.return_value = [
+        _unidade("Vapt Vupt Anhanguera", ["02/05", "03/05"]),
+    ]
+    store = StateStore(tmp_path / "state.json")
+    subs = SubscriberStore(tmp_path / "subs.json")
+    subs.add(111)
+    subs.add(222)
+
+    notifier = MagicMock(spec=TelegramNotifier)
+    notifier.broadcast.return_value = [
+        BroadcastResult(111, True, 200, None),
+        BroadcastResult(222, True, 200, None),
+    ]
+
+    sch = Scheduler(
+        settings=settings, client=client, notifier=notifier,
+        store=store, subscriber_store=subs,
+    )
+    sch.run_once()
+
+    assert notifier.broadcast.call_count == 1
+    call_args = notifier.broadcast.call_args
+    chat_ids = call_args[0][0] if call_args[0] else call_args[1]["chat_ids"]
+    assert set(chat_ids) == {111, 222}
+
+
+def test_scheduler_removes_403_subscribers(tmp_path):
+    """Broadcast com 403 → chat removido do subscriber_store."""
+    from unittest.mock import MagicMock
+    from bot.scheduler import Scheduler
+    from bot.state_store import StateStore
+    from bot.config import Settings
+
+    settings = Settings(
+        telegram_bot_token="t", telegram_chat_id="",
+        poll_interval_seconds=300, jitter_seconds=30,
+        cod_municipio=25300, id_senha=58, log_level="INFO",
+        goias_oauth_basic="b", goias_referer="r",
+        webhook_port=8080, webhook_path="/h", webhook_secret_token="s",
+    )
+    client = MagicMock()
+    client.fetch_datas.return_value = [
+        _unidade("Vapt Vupt", ["02/05"]),
+    ]
+    store = StateStore(tmp_path / "state.json")
+    subs = SubscriberStore(tmp_path / "subs.json")
+    subs.add(111)
+    subs.add(222)
+
+    notifier = MagicMock(spec=TelegramNotifier)
+    notifier.broadcast.return_value = [
+        BroadcastResult(111, True, 200, None),
+        BroadcastResult(222, False, 403, "Forbidden"),
+    ]
+
+    sch = Scheduler(
+        settings=settings, client=client, notifier=notifier,
+        store=store, subscriber_store=subs,
+    )
+    sch.run_once()
+
+    assert subs.contains(111)
+    assert not subs.contains(222), "subscriber com 403 deveria ter sido removido"

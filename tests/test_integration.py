@@ -34,6 +34,9 @@ def _make_settings(cod: int = 25300) -> Settings:
         log_level="INFO",
         goias_oauth_basic="dummy-basic",
         goias_referer="https://www.go.gov.br/x",
+        webhook_port=8080,
+        webhook_path="/telegram/webhook",
+        webhook_secret_token="",
     )
 
 

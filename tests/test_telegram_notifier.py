@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 import responses
@@ -9,6 +10,7 @@ import responses
 from bot.change_detector import Diff
 from bot.telegram_notifier import (
     API_BASE,
+    BroadcastResult,
     TelegramNotifier,
     escape_md_v2,
     format_message,
@@ -137,3 +139,51 @@ def test_send_text_429_respeita_retry_after(monkeypatch):
     notifier = TelegramNotifier(token, 999)
     assert notifier.send_text("ola") is True
     assert 7 in waits
+
+
+@responses.activate
+def test_broadcast_three_chats_one_403_one_500_one_ok():
+    """Broadcast: ok=200, blocked=403 (com http_status), erro 500 (depois esgota)."""
+    notifier = TelegramNotifier("TOKEN_TESTE")  # sem chat_id
+
+    def chat_url(chat_id):
+        return "https://api.telegram.org/botTOKEN_TESTE/sendMessage"
+
+    # responses não filtra por payload por default — usamos callback pra discriminar
+    def cb(request):
+        body = json.loads(request.body)
+        cid = body["chat_id"]
+        if cid == 111:
+            return (200, {}, json.dumps({"ok": True}))
+        if cid == 222:
+            return (403, {}, json.dumps({"ok": False, "description": "Forbidden: bot was blocked"}))
+        # 333 → 500 sempre
+        return (500, {}, "boom")
+
+    responses.add_callback(
+        responses.POST,
+        "https://api.telegram.org/botTOKEN_TESTE/sendMessage",
+        callback=cb,
+    )
+
+    results = notifier.broadcast([111, 222, 333], "msg")
+    by_chat = {r.chat_id: r for r in results}
+    assert by_chat[111].ok is True
+    assert by_chat[111].http_status == 200
+    assert by_chat[222].ok is False
+    assert by_chat[222].http_status == 403
+    assert by_chat[333].ok is False
+    # após esgotar 5xx → 500 vira o último visto
+    assert by_chat[333].http_status == 500
+
+
+def test_send_text_without_chat_id_raises():
+    notifier = TelegramNotifier("TOKEN_TESTE")  # chat_id ausente
+    import pytest
+    with pytest.raises(RuntimeError, match="chat_id"):
+        notifier.send_text("hi")
+
+
+def test_broadcast_empty_returns_empty_list():
+    notifier = TelegramNotifier("TOKEN_TESTE")
+    assert notifier.broadcast([], "msg") == []

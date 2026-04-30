@@ -29,6 +29,9 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "LOG_LEVEL",
         "GOIAS_OAUTH_BASIC",
         "GOIAS_REFERER",
+        "WEBHOOK_PORT",
+        "WEBHOOK_PATH",
+        "WEBHOOK_SECRET_TOKEN",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -72,6 +75,9 @@ def test_require_goias_falha_sem_basic():
         log_level="INFO",
         goias_oauth_basic="",
         goias_referer="https://x",
+        webhook_port=8080,
+        webhook_path="/telegram/webhook",
+        webhook_secret_token="",
     )
     with pytest.raises(RuntimeError, match="GOIAS_OAUTH_BASIC"):
         require_goias(s)
@@ -88,6 +94,9 @@ def test_require_telegram_run_precisa_chat_id():
         log_level="INFO",
         goias_oauth_basic="x",
         goias_referer="x",
+        webhook_port=8080,
+        webhook_path="/telegram/webhook",
+        webhook_secret_token="",
     )
     with pytest.raises(RuntimeError, match="TELEGRAM_CHAT_ID"):
         require_telegram(s, need_chat_id=True)
@@ -105,6 +114,9 @@ def test_require_telegram_falha_sem_token():
         log_level="INFO",
         goias_oauth_basic="x",
         goias_referer="x",
+        webhook_port=8080,
+        webhook_path="/telegram/webhook",
+        webhook_secret_token="",
     )
     with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
         require_telegram(s, need_chat_id=False)
@@ -121,6 +133,38 @@ def test_chat_id_int_converte():
         log_level="INFO",
         goias_oauth_basic="x",
         goias_referer="x",
+        webhook_port=8080,
+        webhook_path="/telegram/webhook",
+        webhook_secret_token="",
     )
     assert s.has_chat_id
     assert s.chat_id_int == 12345
+
+
+def test_settings_has_webhook_defaults(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    monkeypatch.setattr("bot.config.ENV_PATH", tmp_path / ".env")
+    settings = load_settings()
+    assert settings.webhook_port == 8080
+    assert settings.webhook_path == "/telegram/webhook"
+    assert settings.webhook_secret_token == ""  # vazio = será gerado no boot
+
+def test_settings_reads_webhook_from_env(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    env = tmp_path / ".env"
+    env.write_text(
+        "WEBHOOK_PORT=9090\n"
+        "WEBHOOK_PATH=/hook\n"
+        "WEBHOOK_SECRET_TOKEN=abc123\n"
+    )
+    monkeypatch.setattr("bot.config.ENV_PATH", env)
+    settings = load_settings(env)
+    assert settings.webhook_port == 9090
+    assert settings.webhook_path == "/hook"
+    assert settings.webhook_secret_token == "abc123"
+
+def test_settings_poll_interval_default_is_300(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    monkeypatch.setattr("bot.config.ENV_PATH", tmp_path / ".env")
+    settings = load_settings()
+    assert settings.poll_interval_seconds == 300

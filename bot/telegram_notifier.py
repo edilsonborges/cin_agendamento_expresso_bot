@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -33,6 +34,14 @@ MAX_DATAS_INLINE = 5
 _MD_V2_SPECIALS = r"_*[]()~`>#+-=|{}.!\\"
 
 
+@dataclass(frozen=True)
+class BroadcastResult:
+    chat_id: int
+    ok: bool
+    http_status: int | None  # None = falha de rede / sem resposta HTTP
+    error: str | None        # human-readable, vazio se ok
+
+
 def escape_md_v2(text: str) -> str:
     out = []
     for ch in text:
@@ -47,7 +56,7 @@ class TelegramNotifier:
     def __init__(
         self,
         token: str,
-        chat_id: int | str,
+        chat_id: int | str | None = None,
         *,
         timeout: float = DEFAULT_TIMEOUT,
         session: requests.Session | None = None,
@@ -63,13 +72,33 @@ class TelegramNotifier:
 
     def send_text(self, text: str, *, parse_mode: str = "MarkdownV2") -> bool:
         """Envia mensagem com retry. Devolve True se entregue, False caso falhe."""
+        if self._chat_id is None:
+            raise RuntimeError("send_text precisa de chat_id no construtor")
+        result = self._send_to(self._chat_id, text, parse_mode)
+        return result.ok
+
+    def broadcast(
+        self,
+        chat_ids: list[int] | set[int],
+        text: str,
+        *,
+        parse_mode: str = "MarkdownV2",
+    ) -> list[BroadcastResult]:
+        """Envia `text` para múltiplos chat_ids — retorna resultado por chat."""
+        return [self._send_to(cid, text, parse_mode) for cid in chat_ids]
+
+    def _send_to(
+        self, chat_id: int | str, text: str, parse_mode: str
+    ) -> BroadcastResult:
         payload: dict[str, Any] = {
-            "chat_id": self._chat_id,
+            "chat_id": chat_id,
             "text": text,
             "parse_mode": parse_mode,
             "disable_web_page_preview": True,
         }
         backoff = 2.0
+        last_status: int | None = None
+        last_error: str | None = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 resp = self._session.post(
@@ -77,15 +106,18 @@ class TelegramNotifier:
                 )
             except requests.RequestException as exc:
                 logger.warning("telegram tentativa=%d falha-rede=%s", attempt, exc)
+                last_error = f"network: {exc}"
                 time.sleep(backoff)
                 backoff *= 2
                 continue
 
+            last_status = resp.status_code
             if resp.status_code == 200:
-                return True
+                return BroadcastResult(int(chat_id), True, 200, None)
             if resp.status_code == 429:
                 retry_after = self._retry_after(resp)
                 logger.warning("telegram 429 retry_after=%ds", retry_after)
+                last_error = f"429 retry_after={retry_after}"
                 time.sleep(retry_after)
                 continue
             if resp.status_code >= 500:
@@ -95,16 +127,23 @@ class TelegramNotifier:
                     resp.status_code,
                     resp.text[:200],
                 )
+                last_error = f"{resp.status_code}: {resp.text[:200]}"
                 time.sleep(backoff)
                 backoff *= 2
                 continue
+            # 4xx (não 429) → não adianta retry
             logger.error(
                 "telegram 4xx status=%d body=%s — abortando", resp.status_code, resp.text[:200]
             )
-            return False
+            return BroadcastResult(
+                int(chat_id),
+                False,
+                resp.status_code,
+                f"{resp.status_code}: {resp.text[:200]}",
+            )
 
-        logger.error("telegram esgotou %d tentativas", MAX_RETRIES)
-        return False
+        logger.error("telegram esgotou %d tentativas chat_id=%s", MAX_RETRIES, chat_id)
+        return BroadcastResult(int(chat_id), False, last_status, last_error or "max retries")
 
     @staticmethod
     def _retry_after(resp: requests.Response) -> int:
