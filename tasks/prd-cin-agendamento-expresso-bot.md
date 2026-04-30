@@ -355,6 +355,21 @@ Reset ao primeiro HTTP 200.
 
 ## 11. Plano de Implementação em Fases
 
+### Diretrizes de versionamento e segurança
+
+- **Commits orgânicos, NÃO um commit por fase.** As fases abaixo descrevem
+  agrupamentos lógicos de trabalho, não unidades de commit. Faça commits
+  pequenos e contextuais sempre que houver uma mudança coerente
+  (ex: "feat: ExpressoAuth com cache de token"), mesmo que a fase ainda
+  não esteja terminada. Isso facilita revisão e revert.
+- **Nunca commitar a chave do bot Telegram** (nem em código, nem em
+  documentação, nem em mensagens de commit). A `.env` está no `.gitignore`;
+  qualquer outro lugar é proibido. O `.env.example` deve ter sempre valores
+  vazios ou placeholders (`<sua-chave-do-bot>`).
+- **Pre-commit defensivo:** considerar adicionar [`gitleaks`](https://github.com/gitleaks/gitleaks)
+  ou hook simples que rejeite o padrão `[0-9]{9,10}:[A-Za-z0-9_-]{35}` (formato
+  do token de bot Telegram).
+
 ### Fase 0 — Bootstrap (1 sessão)
 - [x] Pasta + git init + remote privado
 - [ ] PRD aprovado (este documento)
@@ -397,7 +412,7 @@ Reset ao primeiro HTTP 200.
 | R1 | Goiás Digital troca o `client_id`/`client_secret` exposto no front | Média | Alto | Bot detecta 401 mesmo após refresh → loga FATAL com instrução para o dev abrir o site e capturar nova credential. README documenta processo. |
 | R2 | API muda formato de resposta | Baixa | Médio | Validação leve do shape (`isinstance(list)`) — em caso de quebra, loga erro detalhado e mantém loop. Não tenta inferir formato. |
 | R3 | WAF / rate limit bloqueia o IP | Média | Alto | Jitter aleatório, intervalo conservador (3 min), User-Agent realista, Referer correto. Se 429 ou 403, backoff por 30 min e notifica via Telegram. |
-| R4 | Token do Telegram vazado em commit | Média (humano) | Alto | `.gitignore` cobre `.env`; pre-commit hook valida que `.env` nunca é staged. README alerta. |
+| R4 | Token do Telegram vazado em commit ou no PRD | Média (humano) | Alto | `.gitignore` cobre `.env`; pre-commit hook (gitleaks) bloqueia padrão de token de bot Telegram; PRD/README usam apenas placeholders. **Mitigação se vazar:** revogar imediatamente via @BotFather (`/revoke`) e gerar nova chave — invalidação é instantânea e simples. |
 | R5 | Mac dorme / perde conexão | Alta | Médio | `caffeinate -s` opcional; launchd com `KeepAlive` reinicia ao acordar. Loop tolera erros de rede transitórios. |
 | R6 | Vaga abre e fecha entre dois polls (perdida) | Média | Médio | 3 min é o melhor compromisso. Se virar problema real, reduzir para 60s (custo: maior risco de bloqueio). |
 | R7 | Múltiplas instâncias rodando ao mesmo tempo (spam) | Baixa | Alto | Lockfile em `state.lock`. Segunda instância detecta e aborta. |
@@ -416,10 +431,16 @@ Reset ao primeiro HTTP 200.
 - **Testes:** `pytest` + `responses` (mock de HTTP)
 
 ### Variáveis de ambiente
+
+> ⚠️ **Nunca colocar valores reais de `TELEGRAM_BOT_TOKEN` neste documento, no
+> README, em commits ou em qualquer arquivo versionado.** A chave do bot fica
+> exclusivamente no `.env` local (que está no `.gitignore`). Se a chave for
+> exposta acidentalmente, revogar via @BotFather (`/revoke`) e gerar nova.
+
 ```env
-# Obrigatórias
-TELEGRAM_BOT_TOKEN=8625551703:AAFAWBem2VWIIey-fYiwmF3tGWYcglcSUro
-TELEGRAM_CHAT_ID=
+# Obrigatórias — preencher no .env local, nunca neste PRD
+TELEGRAM_BOT_TOKEN=<sua-chave-do-bot>
+TELEGRAM_CHAT_ID=<seu-chat-id>
 
 # Opcionais (com defaults)
 POLL_INTERVAL_SECONDS=180
@@ -428,8 +449,8 @@ COD_MUNICIPIO=25300
 ID_SENHA=58
 LOG_LEVEL=INFO
 
-# Credenciais Goiás Digital (públicas, do front-end)
-GOIAS_OAUTH_BASIC=ak1Rb3lIX1QyR3BXWHdCbEg2Z29XZkJCZHIwYTprOEJPc0lIVEY2c0FSZkhxNHFCUHN2YVlqZjRh
+# Credenciais Goiás Digital (públicas, capturadas do front-end — OK estar aqui)
+GOIAS_OAUTH_BASIC=<basic-base64-do-front>
 GOIAS_REFERER=https://www.go.gov.br/servicos-digitais/vapt-vupt/agendamento-atendimento-presencial/novo/origem-rg
 ```
 
